@@ -77,11 +77,17 @@ print('Description embeddings...')
 desc_embs = transformText(data['description'], desc_tokenizer)
 print('Title embeddings...')
 title_embs = transformText(data['title'], title_tokenizer)
-#data.drop(['image', 'activation_date'], axis=1, inplace=True)
+
 print('Encoding desc...')
-data['description'] = desc_tokenizer.texts_to_sequences(data['description'])
+data_desc = desc_tokenizer.texts_to_sequences(data['description'])
+data_desc = sequence.pad_sequences(data_desc, maxlen=max_word_len)
+#print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
 print('Encoding title...')
-data['title'] = title_tokenizer.texts_to_sequences(data['title'])
+data_title = title_tokenizer.texts_to_sequences(data['title'])
+data_title = sequence.pad_sequences(data_title, maxlen=max_word_len)
+
+print(data_desc[1:3])
+#print(data['proc_description'].head())
 
 # %% Encoding
 print('\nEncoding cat vars...')
@@ -101,14 +107,8 @@ max_itop1 = data['image_top_1'].max() + 1
 #max_param_2 = data['param_2'].max() + 1
 #max_param_3 = data['param_3'].max() + 1
 
-#tokenizer = text.Tokenizer(num_words=max_word_features)
-#sample = train['description'].iloc[:10]
-#tokenizer.fit_on_texts(list(sample.fillna('NA')))
-#print(tokenizer.texts_to_sequences(sample))
-print(data['title'].head())
-
 # %% Split datasets
-def getKerasData(dataset):
+def getKerasData(dataset, desc=None, title=None):
     X = {
         'region': np.array(dataset.region),
         'city': np.array(dataset.city),
@@ -125,14 +125,18 @@ def getKerasData(dataset):
         'title_wc': np.array(dataset.title_wc),
         'desc_len': np.array(dataset.desc_len),
         'desc_wc': np.array(dataset.desc_wc),
-        'desc': np.array(dataset.description),
-        'title': np.array(dataset.title),
+        'desc': desc,
+        'title': title,
     }; return X
 
-train = data.iloc[:train_len].copy()
-y_tr = train.deal_probability.values
 test = data.iloc[train_len:].copy()
-del data; gc.collect()
+desc_te = data_desc[train_len:]
+title_te = data_title[train_len:]
+train = data.iloc[:train_len].copy()
+desc_tr = data_desc[:train_len]
+title_tr = data_title[:train_len]
+y_tr = train.deal_probability.values
+del data; del data_desc; del data_title; gc.collect()
 
 # %% Create model
 print('Creating model...')
@@ -158,9 +162,9 @@ def getModel():
     in_itop1 = Input(shape=[1], name='itop1')
     emb_itop1 = Embedding(max_itop1, emb_n)(in_itop1)
     in_desc = Input(shape=(max_word_len,), name='desc')
-    emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs])(in_desc)
+    emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
     in_title = Input(shape=(max_word_len,), name='title')
-    emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs])(in_title)
+    emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
     # in_param_1 = Input(shape=[1], name='param_1')
     # emb_param_1 = Embedding(max_param_1, emb_n)(in_param_1)
     # in_param_2 = Input(shape=[1], name='param_2')
@@ -184,8 +188,8 @@ def getModel():
     nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
     s_dout = Flatten()(SpatialDropout1D(.4)(embs))
     
-    descConv = Conv1D(100, kernel_size=4, strides=1, padding="same")(emb_desc)
-    titleConv = Conv1D(100, kernel_size=4, strides=1, padding="same")(emb_title)
+    descConv = Conv1D(100, kernel_size=25, strides=1, padding="same")(emb_desc)
+    titleConv = Conv1D(100, kernel_size=25, strides=1, padding="same")(emb_title)
     convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
     
     x = concatenate([(s_dout), (convs), *nums])
@@ -213,13 +217,13 @@ cv_tr = np.zeros((len(y_tr), 1))
 
 for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
-    X_valid = getKerasData(train.iloc[valid_idx])
-    X_train = getKerasData(train.iloc[train_idx])
+    X_valid = getKerasData(train.iloc[valid_idx], desc_tr[valid_idx], title_tr[valid_idx])
+    X_train = getKerasData(train.iloc[train_idx], desc_tr[train_idx], title_tr[train_idx])
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=1000, validation_data=(X_valid, y_valid), epochs=3, verbose=2)
-    cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
+    model.fit(X_train, y_train, batch_size=512, validation_data=(X_valid, y_valid), epochs=3, verbose=2)
+    cv_tr[valid_idx] = model.predict(X_valid, batch_size=2000)
     models.append(model)
     
 # Fold RMSE: 0.23286290473878124
@@ -229,7 +233,7 @@ print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 # %% Predict
 preds = np.zeros((len(test), 1))
 for model in models:
-    preds += model.predict(getKerasData(test), batch_size=4000)
+    preds += model.predict(getKerasData(test, desc_te, title_te), batch_size=4000)
 
 submit['deal_probability'] = preds / len(models)
 print(submit.head())
