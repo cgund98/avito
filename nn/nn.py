@@ -18,9 +18,9 @@ os.environ['OMP_NUM_THREADS'] = '3'
 pd.options.mode.chained_assignment = None
 
 # %% Load data
-kaggle_path = '../input/avito-demand-prediction/'
-output_file = 'nn_avito.csv'
-embeddings_file = '../input/fasttest-common-crawl-russian/cc.ru.300.vec'
+kaggle_path = '~/hdd/data/avito/'
+output_file = 'submits/nn_avito.csv'
+embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
 
 print('\nLoading data...\n')
 train = pd.read_csv(kaggle_path + 'train.csv', parse_dates=['activation_date'])
@@ -61,7 +61,7 @@ def transformText(text_df, tokenizer):
     #X_text = sequence.pad_sequences(X_text, maxlen=maxlen)
     def get_coefs(word, *arr): return word, np.asarray(arr, dtype='float32')
     embeddings_index = dict(get_coefs(*o.rstrip().rsplit(' ')) for o in open(embeddings_file))
-    
+
     word_index = tokenizer.word_index
     print('Word index len:', len(word_index))
     nb_words = min(max_features, len(word_index)) + 1
@@ -187,11 +187,11 @@ def getModel():
                          ])
     nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
     s_dout = Flatten()(SpatialDropout1D(.4)(embs))
-    
-    descConv = Conv1D(100, kernel_size=25, strides=1, padding="same")(emb_desc)
-    titleConv = Conv1D(100, kernel_size=25, strides=1, padding="same")(emb_title)
+
+    descConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_desc)
+    titleConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_title)
     convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
-    
+
     x = concatenate([(s_dout), (convs), *nums])
     x = Dropout(.4)(Dense(512, activation='relu')(x))
     x = BatchNormalization()(x)
@@ -222,10 +222,10 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=512, validation_data=(X_valid, y_valid), epochs=3, verbose=2)
-    cv_tr[valid_idx] = model.predict(X_valid, batch_size=2000)
+    model.fit(X_train, y_train, batch_size=512, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
     models.append(model)
-    
+
 # Fold RMSE: 0.23286290473878124
 
 print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
