@@ -36,35 +36,36 @@ print('Columns:\n', data.columns.values)
 # %% Preprocess
 eps = .001
 data['price'] = np.log(data['price'] + eps)
-data['price'].fillna(-1, inplace=True)
+data['price'].fillna(-999, inplace=True)
 data['image_top_1'].fillna(-999, inplace=True)
-#data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
-#data[['param_1', 'param_2', 'param_3']] = data[['param_1', 'param_2', 'param_3']].astype(str)
+data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
+data[['param_1', 'param_2', 'param_3']] = data[['param_1', 'param_2', 'param_3']].astype(str)
 data['desc_len'] = data['description'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['desc_wc'] = data['description'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
 data['title_len'] = data['title'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['title_wc'] = data['title'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
 data[['description', 'title']] = data[['description', 'title']].astype(str)
 data['desc_len'] = np.log(data['desc_len'] + eps)
-data['desc_len'].fillna(-1, inplace=True)
+data['desc_len'].fillna(-999, inplace=True)
 data['desc_wc'] = np.log(data['desc_wc'] + eps)
-data['desc_wc'].fillna(-1, inplace=True)
+data['desc_wc'].fillna(-999, inplace=True)
 data['title_len'] = np.log(data['title_len'] + eps)
-data['title_len'].fillna(-1, inplace=True)
+data['title_len'].fillna(-999, inplace=True)
 data['title_wc'] = np.log(data['title_wc'] + eps)
-data['title_wc'].fillna(-1, inplace=True)
+data['title_wc'].fillna(-999, inplace=True)
+data['item_seq_number'] = np.log(data['item_seq_number'] + eps)
+data['item_seq_number'].fillna(-999, inplace=True)
 
 # %% Process words
-word_vec_size = 300
+word_vec_size = 100
 max_word_len = 100
 max_word_features = 100000
 desc_tokenizer = text.Tokenizer(num_words=max_word_features)
 title_tokenizer = text.Tokenizer(num_words=max_word_features)
 
-def transformText(text_df, tokenizer):
+def transformText(text_df, tokenizer, maxlen=100):
     max_features = max_word_features
     embed_size = word_vec_size
-    maxlen = max_word_len
     X_text = text_df.astype(str).fillna('NA')
     tokenizer.fit_on_texts(list(X_text))
     #X_text = tokenizer.texts_to_sequences(X_text)
@@ -84,17 +85,17 @@ def transformText(text_df, tokenizer):
 
 print('\nCreating word embeddings...')
 print('Description embeddings...')
-desc_embs = transformText(data['description'], desc_tokenizer)
+desc_embs = transformText(data['description'], desc_tokenizer, maxlen=data['desc_wc'].max())
 print('Title embeddings...')
-title_embs = transformText(data['title'], title_tokenizer)
+title_embs = transformText(data['title'], title_tokenizer, maxlen=data['title_wc'].max())
 
 print('Encoding desc...')
 data_desc = desc_tokenizer.texts_to_sequences(data['description'])
-data_desc = sequence.pad_sequences(data_desc, maxlen=max_word_len)
+data_desc = sequence.pad_sequences(data_desc, maxlen=data['desc_wc'].max())
 #print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
 print('Encoding title...')
 data_title = title_tokenizer.texts_to_sequences(data['title'])
-data_title = sequence.pad_sequences(data_title, maxlen=max_word_len)
+data_title = sequence.pad_sequences(data_title, maxlen=data['title_wc'].max())
 
 print(data_desc[1:3])
 #print(data['proc_description'].head())
@@ -102,7 +103,7 @@ print(data_desc[1:3])
 # %% Encoding
 print('\nEncoding cat vars...')
 #cat_cols = ["user_id", "region", "city", "parent_category_name", "category_name", "item_seq_number", "user_type", "image_top_1"]
-cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "item_seq_number", ]#"param_1", "param_2", "param_3"]
+cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "item_seq_number", "param_1", "param_2", "param_3"]
 data[cat_cols] = data[cat_cols].apply(LabelEncoder().fit_transform).astype(np.int32)
 
 # Assign max values for embedding
@@ -113,9 +114,9 @@ max_cat = data['category_name'].max() + 1
 max_seq = data['item_seq_number'].max() + 1
 max_utype = data['user_type'].max() + 1
 max_itop1 = data['image_top_1'].max() + 1
-#max_param_1 = data['param_1'].max() + 1
-#max_param_2 = data['param_2'].max() + 1
-#max_param_3 = data['param_3'].max() + 1
+max_param_1 = data['param_1'].max() + 1
+max_param_2 = data['param_2'].max() + 1
+max_param_3 = data['param_3'].max() + 1
 
 # %% Split datasets
 def getKerasData(dataset, desc=None, title=None):
@@ -128,9 +129,9 @@ def getKerasData(dataset, desc=None, title=None):
         'utype': np.array(dataset.user_type),
         'price': np.array(dataset.price),
         'itop1': np.array(dataset.image_top_1),
-        #'param_1': np.array(dataset.param_1),
-        #'param_2': np.array(dataset.param_2),
-        #'param_3': np.array(dataset.param_3),
+        'param_1': np.array(dataset.param_1),
+        'param_2': np.array(dataset.param_2),
+        'param_3': np.array(dataset.param_3),
         'title_len': np.array(dataset.title_len),
         'title_wc': np.array(dataset.title_wc),
         'desc_len': np.array(dataset.desc_len),
@@ -166,8 +167,6 @@ def getModel():
     emb_pcat = Embedding(max_pcat, emb_depth(max_pcat))(in_pcat)
     in_cat = Input(shape=[1], name='cat')
     emb_cat = Embedding(max_cat, emb_depth(max_cat))(in_cat)
-    in_seq = Input(shape=[1], name='seq')
-    emb_seq = Embedding(max_seq, emb_depth(max_seq))(in_seq)
     in_utype = Input(shape=[1], name='utype')
     emb_utype = Embedding(max_utype, emb_depth(max_utype))(in_utype)
     in_itop1 = Input(shape=[1], name='itop1')
@@ -176,12 +175,12 @@ def getModel():
     # emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
     # in_title = Input(shape=(max_word_len,), name='title')
     # emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
-    # in_param_1 = Input(shape=[1], name='param_1')
-    # emb_param_1 = Embedding(max_param_1, emb_n)(in_param_1)
-    # in_param_2 = Input(shape=[1], name='param_2')
-    # emb_param_2 = Embedding(max_param_2, emb_n)(in_param_2)
-    # in_param_3 = Input(shape=[1], name='param_3')
-    # emb_param_3 = Embedding(max_param_3, emb_n)(in_param_3)
+    in_param_1 = Input(shape=[1], name='param_1')
+    emb_param_1 = Embedding(max_param_1, emb_depth(max_param_1))(in_param_1)
+    in_param_2 = Input(shape=[1], name='param_2')
+    emb_param_2 = Embedding(max_param_2, emb_depth(max_param_2))(in_param_2)
+    in_param_3 = Input(shape=[1], name='param_3')
+    emb_param_3 = Embedding(max_param_3, emb_depth(max_param_3))(in_param_3)
 
     in_price = Input(shape=[1], name='price')
     emb_price = Dense(cont_size, activation='tanh')(in_price)
@@ -193,30 +192,33 @@ def getModel():
     emb_desc_len = Dense(cont_size, activation='tanh')(in_desc_len)
     in_desc_wc = Input(shape=[1], name='desc_wc')
     emb_desc_wc = Dense(cont_size, activation='tanh')(in_desc_wc)
+    in_seq = Input(shape=[1], name='seq')
+    emb_seq = Dense(cont_size, activation='tanh')(in_seq)
 
-    inps = [in_region, in_city, in_pcat, in_cat, in_utype, in_itop1, #in_seq, #in_param_1, in_param_2, in_param_3,
+    inps = [in_region, in_city, in_pcat, in_cat, in_utype, in_itop1, in_seq, in_param_1, in_param_2, in_param_3,
             in_price, in_title_len, in_title_wc, in_desc_len, in_desc_wc,
             #in_desc, in_title
             ]
     cat_embs = concatenate([ (emb_region), (emb_city), (emb_pcat), (emb_cat), (emb_utype),
-                             (emb_itop1), #(emb_seq),# (emb_param_1), (emb_param_2), (emb_param_3)
+                             (emb_itop1),  (emb_param_1), (emb_param_2), (emb_param_3)
                             ])
     cont_embs = concatenate([ (emb_price), (emb_title_len), (emb_title_wc), (emb_desc_len),
-                              (emb_desc_wc),
+                              (emb_desc_wc), (emb_seq)
                              ])
-    nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
-    s_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
+    #nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
+    cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
+    cont_dout = Dropout(.4)(cont_embs)
 
     #descConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_desc)
     #titleConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_title)
     #convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
 
-    x = concatenate([(s_dout), cont_embs])
+    x = concatenate([(cat_dout), (cont_dout)])
     # x = concatenate([(s_dout), (convs), *nums])
-    x = Dropout(.4)(Dense(512, activation='relu')(x))
-    x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(256, activation='relu')(x))
-    x = BatchNormalization()(x)
+    #x = BatchNormalization()(x)
+    x = Dropout(.4)(Dense(64, activation='relu')(x))
+    #x = BatchNormalization()(x)
     out = Dense(1, activation='sigmoid')(x)
 
 
@@ -224,7 +226,7 @@ def getModel():
 
     from keras import backend as K
 
-    opt = Adam(lr=2e-3)
+    opt = Adam(lr=3e-3, decay=5e-5)
     model.compile(optimizer=opt, loss='mean_squared_error', metrics=[root_mean_squared_error])
     return model
 
@@ -242,7 +244,7 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=1024, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=10, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
     models.append(model)
 
