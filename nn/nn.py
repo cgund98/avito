@@ -34,7 +34,8 @@ print('Train Length: {} \nTest Length: {} \n'.format(train_len, len(test)))
 print('Columns:\n', data.columns.values)
 
 # %% Preprocess
-data['price'] = np.log(data['price'] + .001)
+eps = .001
+data['price'] = np.log(data['price'] + eps)
 data['price'].fillna(-1, inplace=True)
 data['image_top_1'].fillna(-999, inplace=True)
 #data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
@@ -44,7 +45,16 @@ data['desc_wc'] = data['description'].map(lambda x: len(str(x).split(' '))).asty
 data['title_len'] = data['title'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['title_wc'] = data['title'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
 data[['description', 'title']] = data[['description', 'title']].astype(str)
+data['desc_len'] = np.log(data['desc_len'] + eps)
+data['desc_len'].fillna(-1, inplace=True)
+data['desc_wc'] = np.log(data['desc_wc'] + eps)
+data['desc_wc'].fillna(-1, inplace=True)
+data['title_len'] = np.log(data['title_len'] + eps)
+data['title_len'].fillna(-1, inplace=True)
+data['title_wc'] = np.log(data['title_wc'] + eps)
+data['title_wc'].fillna(-1, inplace=True)
 
+# %% Process words
 word_vec_size = 300
 max_word_len = 100
 max_word_features = 100000
@@ -145,26 +155,27 @@ def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pre
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 
 def getModel():
-    emb_n = 50
+    def emb_depth(max_size): return min(16, int(max_size**.25))
+    cont_size = 16
 
     in_region = Input(shape=[1], name='region')
-    emb_region = Embedding(max_region, emb_n)(in_region)
+    emb_region = Embedding(max_region, emb_depth(max_region))(in_region)
     in_city = Input(shape=[1], name='city')
-    emb_city = Embedding(max_city, emb_n)(in_city)
+    emb_city = Embedding(max_city, emb_depth(max_city))(in_city)
     in_pcat = Input(shape=[1], name='pcat')
-    emb_pcat = Embedding(max_pcat, emb_n)(in_pcat)
+    emb_pcat = Embedding(max_pcat, emb_depth(max_pcat))(in_pcat)
     in_cat = Input(shape=[1], name='cat')
-    emb_cat = Embedding(max_cat, emb_n)(in_cat)
+    emb_cat = Embedding(max_cat, emb_depth(max_cat))(in_cat)
     in_seq = Input(shape=[1], name='seq')
-    emb_seq = Embedding(max_seq, emb_n)(in_seq)
+    emb_seq = Embedding(max_seq, emb_depth(max_seq))(in_seq)
     in_utype = Input(shape=[1], name='utype')
-    emb_utype = Embedding(max_utype, emb_n)(in_utype)
+    emb_utype = Embedding(max_utype, emb_depth(max_utype))(in_utype)
     in_itop1 = Input(shape=[1], name='itop1')
-    emb_itop1 = Embedding(max_itop1, emb_n)(in_itop1)
-    in_desc = Input(shape=(max_word_len,), name='desc')
-    emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
-    in_title = Input(shape=(max_word_len,), name='title')
-    emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
+    emb_itop1 = Embedding(max_itop1, emb_depth(max_itop1))(in_itop1)
+    # in_desc = Input(shape=(max_word_len,), name='desc')
+    # emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
+    # in_title = Input(shape=(max_word_len,), name='title')
+    # emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
     # in_param_1 = Input(shape=[1], name='param_1')
     # emb_param_1 = Embedding(max_param_1, emb_n)(in_param_1)
     # in_param_2 = Input(shape=[1], name='param_2')
@@ -173,26 +184,35 @@ def getModel():
     # emb_param_3 = Embedding(max_param_3, emb_n)(in_param_3)
 
     in_price = Input(shape=[1], name='price')
+    emb_price = Dense(cont_size, activation='tanh')(in_price)
     in_title_len = Input(shape=[1], name='title_len')
+    emb_title_len = Dense(cont_size, activation='tanh')(in_title_len)
     in_title_wc = Input(shape=[1], name='title_wc')
+    emb_title_wc = Dense(cont_size, activation='tanh')(in_title_wc)
     in_desc_len = Input(shape=[1], name='desc_len')
+    emb_desc_len = Dense(cont_size, activation='tanh')(in_desc_len)
     in_desc_wc = Input(shape=[1], name='desc_wc')
+    emb_desc_wc = Dense(cont_size, activation='tanh')(in_desc_wc)
 
     inps = [in_region, in_city, in_pcat, in_cat, in_utype, in_itop1, #in_seq, #in_param_1, in_param_2, in_param_3,
             in_price, in_title_len, in_title_wc, in_desc_len, in_desc_wc,
-            in_desc, in_title
+            #in_desc, in_title
             ]
-    embs = concatenate([ (emb_region), (emb_city), (emb_pcat), (emb_cat), (emb_utype),
-                         (emb_itop1), #(emb_seq),# (emb_param_1), (emb_param_2), (emb_param_3)
-                         ])
+    cat_embs = concatenate([ (emb_region), (emb_city), (emb_pcat), (emb_cat), (emb_utype),
+                             (emb_itop1), #(emb_seq),# (emb_param_1), (emb_param_2), (emb_param_3)
+                            ])
+    cont_embs = concatenate([ (emb_price), (emb_title_len), (emb_title_wc), (emb_desc_len),
+                              (emb_desc_wc),
+                             ])
     nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
-    s_dout = Flatten()(SpatialDropout1D(.4)(embs))
+    s_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
 
-    descConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_desc)
-    titleConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_title)
-    convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
+    #descConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_desc)
+    #titleConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_title)
+    #convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
 
-    x = concatenate([(s_dout), (convs), *nums])
+    x = concatenate([(s_dout), cont_embs])
+    # x = concatenate([(s_dout), (convs), *nums])
     x = Dropout(.4)(Dense(512, activation='relu')(x))
     x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(256, activation='relu')(x))
@@ -217,12 +237,12 @@ cv_tr = np.zeros((len(y_tr), 1))
 
 for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
-    X_valid = getKerasData(train.iloc[valid_idx], desc_tr[valid_idx], title_tr[valid_idx])
-    X_train = getKerasData(train.iloc[train_idx], desc_tr[train_idx], title_tr[train_idx])
+    X_valid = getKerasData(train.iloc[valid_idx])#, desc_tr[valid_idx], title_tr[valid_idx])
+    X_train = getKerasData(train.iloc[train_idx])#, desc_tr[train_idx], title_tr[train_idx])
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=512, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    model.fit(X_train, y_train, batch_size=1024, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
     models.append(model)
 
