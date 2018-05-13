@@ -34,10 +34,6 @@ print('Train Length: {} \nTest Length: {} \n'.format(train_len, len(test)))
 print('Columns:\n', data.columns.values)
 
 # %% Preprocess
-eps = .001
-data['price'] = np.log(data['price'] + eps)
-data['price'].fillna(-999, inplace=True)
-data['image_top_1'].fillna(-999, inplace=True)
 data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
 data[['param_1', 'param_2', 'param_3']] = data[['param_1', 'param_2', 'param_3']].astype(str)
 data['desc_len'] = data['description'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
@@ -45,20 +41,9 @@ data['desc_wc'] = data['description'].map(lambda x: len(str(x).split(' '))).asty
 data['title_len'] = data['title'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['title_wc'] = data['title'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
 data[['description', 'title']] = data[['description', 'title']].astype(str)
-data['desc_len'] = np.log(data['desc_len'] + eps)
-data['desc_len'].fillna(-999, inplace=True)
-data['desc_wc'] = np.log(data['desc_wc'] + eps)
-data['desc_wc'].fillna(-999, inplace=True)
-data['title_len'] = np.log(data['title_len'] + eps)
-data['title_len'].fillna(-999, inplace=True)
-data['title_wc'] = np.log(data['title_wc'] + eps)
-data['title_wc'].fillna(-999, inplace=True)
-data['item_seq_number'] = np.log(data['item_seq_number'] + eps)
-data['item_seq_number'].fillna(-999, inplace=True)
 
 # %% Process words
-word_vec_size = 100
-max_word_len = 100
+word_vec_size = 300
 max_word_features = 100000
 desc_tokenizer = text.Tokenizer(num_words=max_word_features)
 title_tokenizer = text.Tokenizer(num_words=max_word_features)
@@ -91,14 +76,24 @@ title_embs = transformText(data['title'], title_tokenizer, maxlen=data['title_wc
 
 print('Encoding desc...')
 data_desc = desc_tokenizer.texts_to_sequences(data['description'])
-data_desc = sequence.pad_sequences(data_desc, maxlen=data['desc_wc'].max())
+data_desc = sequence.pad_sequences(data_desc, maxlen=100)
 #print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
 print('Encoding title...')
 data_title = title_tokenizer.texts_to_sequences(data['title'])
-data_title = sequence.pad_sequences(data_title, maxlen=data['title_wc'].max())
+data_title = sequence.pad_sequences(data_title, maxlen=30)
 
-print(data_desc[1:3])
+print(data_title[1:3])
 #print(data['proc_description'].head())
+
+# %% Normalize data
+eps = .001
+data['price'] = np.log(data['price'] + eps); data['price'].fillna(-999, inplace=True)
+data['image_top_1'].fillna(-999, inplace=True)
+data['desc_len'] = np.log(data['desc_len'] + eps); data['desc_len'].fillna(-999, inplace=True)
+data['desc_wc'] = np.log(data['desc_wc'] + eps); data['desc_wc'].fillna(-999, inplace=True)
+data['title_len'] = np.log(data['title_len'] + eps); data['title_len'].fillna(-999, inplace=True)
+data['title_wc'] = np.log(data['title_wc'] + eps); data['title_wc'].fillna(-999, inplace=True)
+data['item_seq_number'] = np.log(data['item_seq_number'] + eps); data['item_seq_number'].fillna(-999, inplace=True)
 
 # %% Encoding
 print('\nEncoding cat vars...')
@@ -171,10 +166,12 @@ def getModel():
     emb_utype = Embedding(max_utype, emb_depth(max_utype))(in_utype)
     in_itop1 = Input(shape=[1], name='itop1')
     emb_itop1 = Embedding(max_itop1, emb_depth(max_itop1))(in_itop1)
-    # in_desc = Input(shape=(max_word_len,), name='desc')
-    # emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
-    # in_title = Input(shape=(max_word_len,), name='title')
-    # emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
+
+    in_desc = Input(shape=(100,), name='desc')
+    emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
+    in_title = Input(shape=(30,), name='title')
+    emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
+
     in_param_1 = Input(shape=[1], name='param_1')
     emb_param_1 = Embedding(max_param_1, emb_depth(max_param_1))(in_param_1)
     in_param_2 = Input(shape=[1], name='param_2')
@@ -197,7 +194,7 @@ def getModel():
 
     inps = [in_region, in_city, in_pcat, in_cat, in_utype, in_itop1, in_seq, in_param_1, in_param_2, in_param_3,
             in_price, in_title_len, in_title_wc, in_desc_len, in_desc_wc,
-            #in_desc, in_title
+            in_desc, in_title
             ]
     cat_embs = concatenate([ (emb_region), (emb_city), (emb_pcat), (emb_cat), (emb_utype),
                              (emb_itop1),  (emb_param_1), (emb_param_2), (emb_param_3)
@@ -209,11 +206,11 @@ def getModel():
     cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
     cont_dout = Dropout(.4)(cont_embs)
 
-    #descConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_desc)
-    #titleConv = Conv1D(100, kernel_size=10, strides=1, padding="same")(emb_title)
-    #convs = Flatten()( concatenate([ (descConv), (titleConv) ]) )
+    descConv = Dropout(.2)( Flatten()( Conv1D(64, kernel_size=10, strides=1, padding="same")(emb_desc) ) )
+    titleConv = Dropout(.2)( Flatten()( Conv1D(32, kernel_size=10, strides=1, padding="same")(emb_title) ) )
+    convs = ( concatenate([ (descConv), (titleConv) ]) )
 
-    x = concatenate([(cat_dout), (cont_dout)])
+    x = concatenate([(cat_dout), (cont_dout), (convs)])
     # x = concatenate([(s_dout), (convs), *nums])
     x = Dropout(.4)(Dense(256, activation='relu')(x))
     #x = BatchNormalization()(x)
@@ -239,16 +236,14 @@ cv_tr = np.zeros((len(y_tr), 1))
 
 for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
-    X_valid = getKerasData(train.iloc[valid_idx])#, desc_tr[valid_idx], title_tr[valid_idx])
-    X_train = getKerasData(train.iloc[train_idx])#, desc_tr[train_idx], title_tr[train_idx])
+    X_valid = getKerasData(train.iloc[valid_idx], desc_tr[valid_idx], title_tr[valid_idx])
+    X_train = getKerasData(train.iloc[train_idx], desc_tr[train_idx], title_tr[train_idx])
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=10, verbose=1)
+    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=5, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
     models.append(model)
-
-# Fold RMSE: 0.23286290473878124
 
 print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 
@@ -260,5 +255,5 @@ for model in models:
 submit['deal_probability'] = preds / len(models)
 print(submit.head())
 
-submit.to_csv(output_file, index=False)
+submit.to_csv('nn/'+output_file, index=False)
 print('\nDone!')
