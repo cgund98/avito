@@ -11,8 +11,11 @@ from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D,
 from keras.layers.core import Flatten, Dense, Dropout, Lambda
 from keras.optimizers import Adam
 from keras.preprocessing import text, sequence
+from string import punctuation
+punct = set(punctuation)
 import os
 import gc
+import re
 os.environ['OMP_NUM_THREADS'] = '3'
 
 pd.options.mode.chained_assignment = None
@@ -36,11 +39,32 @@ print('Columns:\n', data.columns.values)
 # %% Preprocess
 data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
 data[['param_1', 'param_2', 'param_3']] = data[['param_1', 'param_2', 'param_3']].astype(str)
+
+for s in data.description.astype(str):
+    for c in s:
+        if not c.isalpha() and not c.isdigit():
+            punct.add(c)
+
+for s in data.title.astype(str):
+    for c in s:
+        if not c.isalpha() and not c.isdigit():
+            punct.add(c)
+
+def clean_text(s):
+    s = re.sub('м²|\d+\\/\d|\d+-к|\d+к', ' ', s.lower())
+    s = ''.join([' ' if c in punct or c.isdigit() else c for c in s])
+    s = re.sub('\\s+', ' ', s)
+    s = s.strip()
+    return s
+
+#print('clean text')
+data['title'] = data.title.fillna('').astype(str).apply(clean_text)
+data['description'] = data.description.fillna('').astype(str).apply(clean_text)
+
 data['desc_len'] = data['description'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['desc_wc'] = data['description'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
 data['title_len'] = data['title'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
 data['title_wc'] = data['title'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
-data[['description', 'title']] = data[['description', 'title']].astype(str)
 
 # %% Process words
 word_vec_size = 300
@@ -223,14 +247,14 @@ def getModel():
 
     from keras import backend as K
 
-    opt = Adam(lr=3e-3, decay=5e-5)
+    opt = Adam(lr=2e-3,)
     model.compile(optimizer=opt, loss='mean_squared_error', metrics=[root_mean_squared_error])
     return model
 
 # %% Train model
 print('\nTraining...')
 
-kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=218)
+kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=218)
 models = []
 cv_tr = np.zeros((len(y_tr), 1))
 
@@ -241,7 +265,10 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=5, verbose=1)
+    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    for layer in model.layers[:28]: # Freeze embedding layers
+        layer.trainable = False
+    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
     models.append(model)
 
