@@ -21,9 +21,9 @@ os.environ['OMP_NUM_THREADS'] = '3'
 pd.options.mode.chained_assignment = None
 
 # %% Load data
-kaggle_path = '~/hdd/data/avito/'
-output_file = 'submits/nn_avito.csv'
-embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
+kaggle_path = '~/.kaggle/competitions/avito-demand-prediction/'
+output_file = 'nn_avito.csv'
+embeddings_file = '/home/callum/.kaggle/competitions/avito-demand-prediction/cc.ru.300.vec'
 
 print('\nLoading data...\n')
 train = pd.read_csv(kaggle_path + 'train.csv', parse_dates=['activation_date'])
@@ -175,7 +175,7 @@ def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pre
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 
 def getModel():
-    def emb_depth(max_size): return min(16, int(max_size**.25))
+    def emb_depth(max_size): return min(16, int(max_size**.33))
     cont_size = 16
 
     in_region = Input(shape=[1], name='region')
@@ -192,9 +192,9 @@ def getModel():
     emb_itop1 = Embedding(max_itop1, emb_depth(max_itop1))(in_itop1)
 
     in_desc = Input(shape=(100,), name='desc')
-    emb_desc = Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc)
+    emb_desc = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc) )
     in_title = Input(shape=(30,), name='title')
-    emb_title = Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title)
+    emb_title = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title) )
 
     in_param_1 = Input(shape=[1], name='param_1')
     emb_param_1 = Embedding(max_param_1, emb_depth(max_param_1))(in_param_1)
@@ -230,15 +230,16 @@ def getModel():
     cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
     cont_dout = Dropout(.4)(cont_embs)
 
-    descConv = Dropout(.2)( Flatten()( Conv1D(64, kernel_size=10, strides=1, padding="same")(emb_desc) ) )
-    titleConv = Dropout(.2)( Flatten()( Conv1D(32, kernel_size=10, strides=1, padding="same")(emb_title) ) )
+    descConv = Flatten()( Conv1D(64, kernel_size=10, strides=1, padding="same")(emb_desc) )
+    titleConv = Flatten()( Conv1D(32, kernel_size=10, strides=1, padding="same")(emb_title) )
     convs = ( concatenate([ (descConv), (titleConv) ]) )
 
-    x = concatenate([(cat_dout), (cont_dout), (convs)])
+    x = concatenate([(cat_dout), (cont_dout)])
     # x = concatenate([(s_dout), (convs), *nums])
     x = Dropout(.4)(Dense(256, activation='relu')(x))
     #x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(64, activation='relu')(x))
+    x = concatenate([x, (convs)])
     #x = BatchNormalization()(x)
     out = Dense(1, activation='sigmoid')(x)
 
@@ -254,9 +255,11 @@ def getModel():
 # %% Train model
 print('\nTraining...')
 
-kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=218)
+kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=218)
 models = []
 cv_tr = np.zeros((len(y_tr), 1))
+
+bs=1000
 
 for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
@@ -265,11 +268,11 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
     for layer in model.layers[:28]: # Freeze embedding layers
         layer.trainable = False
-    model.fit(X_train, y_train, batch_size=4000, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
-    cv_tr[valid_idx] = model.predict(X_valid, batch_size=4000)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    cv_tr[valid_idx] = model.predict(X_valid, batch_size=bs)
     models.append(model)
 
 print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
@@ -277,7 +280,7 @@ print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 # %% Predict
 preds = np.zeros((len(test), 1))
 for model in models:
-    preds += model.predict(getKerasData(test, desc_te, title_te), batch_size=4000)
+    preds += model.predict(getKerasData(test, desc_te, title_te), batch_size=bs)
 
 submit['deal_probability'] = preds / len(models)
 print(submit.head())
