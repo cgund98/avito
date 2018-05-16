@@ -7,7 +7,7 @@ from sklearn.metrics import mean_squared_error
 
 from keras import backend as K
 from keras.models import Sequential, Model
-from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D
+from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D, GlobalAveragePooling1D
 from keras.layers.core import Flatten, Dense, Dropout, Lambda
 from keras.optimizers import Adam
 from keras.preprocessing import text, sequence
@@ -21,9 +21,9 @@ os.environ['OMP_NUM_THREADS'] = '3'
 pd.options.mode.chained_assignment = None
 
 # %% Load data
-kaggle_path = '~/.kaggle/competitions/avito-demand-prediction/'
-output_file = 'nn_avito.csv'
-embeddings_file = '/home/callum/.kaggle/competitions/avito-demand-prediction/cc.ru.300.vec'
+kaggle_path = '~/hdd/data/avito/'
+output_file = 'submits/nn_avito.csv'
+embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
 
 print('\nLoading data...\n')
 train = pd.read_csv(kaggle_path + 'train.csv', parse_dates=['activation_date'])
@@ -171,7 +171,7 @@ del data; del data_desc; del data_title; gc.collect()
 # %% Create model
 print('Creating model...')
 
-def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true), axis=-1))
+def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true)))
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 
 def getModel():
@@ -230,8 +230,8 @@ def getModel():
     cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
     cont_dout = Dropout(.4)(cont_embs)
 
-    descConv = Flatten()( Conv1D(64, kernel_size=10, strides=1, padding="same")(emb_desc) )
-    titleConv = Flatten()( Conv1D(32, kernel_size=10, strides=1, padding="same")(emb_title) )
+    descConv = GlobalAveragePooling1D()( Conv1D(64, kernel_size=7, strides=1, padding="same")(emb_desc) )
+    titleConv = GlobalAveragePooling1D()( Conv1D(32, kernel_size=7, strides=1, padding="same")(emb_title) )
     convs = ( concatenate([ (descConv), (titleConv) ]) )
 
     x = concatenate([(cat_dout), (cont_dout)])
@@ -249,7 +249,7 @@ def getModel():
     from keras import backend as K
 
     opt = Adam(lr=2e-3,)
-    model.compile(optimizer=opt, loss='mean_squared_error', metrics=[root_mean_squared_error])
+    model.compile(optimizer=opt, loss=root_mean_squared_error)
     return model
 
 # %% Train model
@@ -259,7 +259,7 @@ kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=218)
 models = []
 cv_tr = np.zeros((len(y_tr), 1))
 
-bs=1000
+bs=4000
 
 for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
@@ -286,4 +286,4 @@ submit['deal_probability'] = preds / len(models)
 print(submit.head())
 
 submit.to_csv('nn/'+output_file, index=False)
-print('\nDone!')
+print('\nSaved: ' + output_file + '!')
