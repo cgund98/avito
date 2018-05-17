@@ -24,6 +24,9 @@ pd.options.mode.chained_assignment = None
 kaggle_path = '~/hdd/data/avito/'
 output_file = 'submits/nn_avito.csv'
 embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
+save_text = False
+load_text = True
+save_path = 'data/'
 
 print('\nLoading data...\n')
 train = pd.read_csv(kaggle_path + 'train.csv', parse_dates=['activation_date'])
@@ -92,21 +95,23 @@ def transformText(text_df, tokenizer, maxlen=100):
         if embedding_vector is not None: embedding_matrix[i] = embedding_vector
     return embedding_matrix
 
-print('\nCreating word embeddings...')
-print('Description embeddings...')
-desc_embs = transformText(data['description'], desc_tokenizer, maxlen=data['desc_wc'].max())
-print('Title embeddings...')
-title_embs = transformText(data['title'], title_tokenizer, maxlen=data['title_wc'].max())
+if not load_text:
+    print('\nCreating word embeddings...')
+    print('Description embeddings...')
+    desc_embs = transformText(data['description'], desc_tokenizer, maxlen=data['desc_wc'].max())
+    print('Title embeddings...')
+    title_embs = transformText(data['title'], title_tokenizer, maxlen=data['title_wc'].max())
 
-print('Encoding desc...')
-data_desc = desc_tokenizer.texts_to_sequences(data['description'])
-data_desc = sequence.pad_sequences(data_desc, maxlen=100)
-#print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
-print('Encoding title...')
-data_title = title_tokenizer.texts_to_sequences(data['title'])
-data_title = sequence.pad_sequences(data_title, maxlen=30)
+    print('Encoding desc...')
+    data_desc = desc_tokenizer.texts_to_sequences(data['description'])
+    data_desc = sequence.pad_sequences(data_desc, maxlen=100)
+    #print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
+    print('Encoding title...')
+    data_title = title_tokenizer.texts_to_sequences(data['title'])
+    data_title = sequence.pad_sequences(data_title, maxlen=30)
 
-print(data_title[1:3])
+    print(data_title[1:3])
+
 #print(data['proc_description'].head())
 
 # %% Normalize data
@@ -160,21 +165,37 @@ def getKerasData(dataset, desc=None, title=None):
     }; return X
 
 test = data.iloc[train_len:].copy()
-desc_te = data_desc[train_len:]
-title_te = data_title[train_len:]
 train = data.iloc[:train_len].copy()
-desc_tr = data_desc[:train_len]
-title_tr = data_title[:train_len]
 y_tr = train.deal_probability.values
-del data; del data_desc; del data_title; gc.collect()
+del data; gc.collect()
+
+if not load_text: # Splitting/loading text data
+    desc_te = data_desc[train_len:]
+    title_te = data_title[train_len:]
+    desc_tr = data_desc[:train_len]
+    title_tr = data_title[:train_len]
+    del data_desc; del data_title; gc.collect()
+else:
+    desc_te =np.load(save_path + 'fasttext_desc_te.npy')
+    title_te = np.load(save_path + 'fasttext_title_te.npy')
+    desc_tr = np.load(save_path + 'fasttext_desc_tr.npy')
+    title_tr = np.load(save_path + 'fasttext_title_tr.npy')
+
+if save_text: # Save text data
+    np.save(save_path + 'fasttext_desc_tr', desc_tr)
+    np.save(save_path + 'fasttext_title_tr', title_tr)
+    np.save(save_path + 'fasttext_desc_te', desc_te)
+    np.save(save_path + 'fasttext_title_te', title_te)
+    np.save(save_path + 'fasttext_desc_embs', desc_embs)
+    np.save(save_path + 'fasttext_title_embs', title_embs)
 
 # %% Create model
 print('Creating model...')
 
-def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true)))
-def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
+def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true))) # Keras cost function
+def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred)) # OOF cost function
 
-def getModel():
+def getModel(): # Model for making the NN
     def emb_depth(max_size): return min(16, int(max_size**.33))
     cont_size = 16
 
@@ -230,7 +251,7 @@ def getModel():
     cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
     cont_dout = Dropout(.4)(cont_embs)
 
-    descConv = GlobalAveragePooling1D()( Conv1D(64, kernel_size=7, strides=1, padding="same")(emb_desc) )
+    descConv = GlobalAveragePooling1D()( Conv1D(100, kernel_size=7, strides=1, padding="same")(emb_desc) )
     titleConv = GlobalAveragePooling1D()( Conv1D(32, kernel_size=7, strides=1, padding="same")(emb_title) )
     convs = ( concatenate([ (descConv), (titleConv) ]) )
 
@@ -248,7 +269,7 @@ def getModel():
 
     from keras import backend as K
 
-    opt = Adam(lr=2e-3,)
+    opt = Adam(lr=2e-3, decay=1e-6)
     model.compile(optimizer=opt, loss=root_mean_squared_error)
     return model
 
@@ -268,10 +289,10 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=4, verbose=1)
     for layer in model.layers[:28]: # Freeze embedding layers
         layer.trainable = False
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=6, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=bs)
     models.append(model)
 
@@ -279,10 +300,10 @@ print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 
 # %% Predict
 preds = np.zeros((len(test), 1))
-for model in models:
+for model in models: # Make predictions for each model
     preds += model.predict(getKerasData(test, desc_te, title_te), batch_size=bs)
 
-submit['deal_probability'] = preds / len(models)
+submit['deal_probability'] = preds / len(models) # Average predictions of each model
 print(submit.head())
 
 submit.to_csv('nn/'+output_file, index=False)
