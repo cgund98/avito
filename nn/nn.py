@@ -7,7 +7,7 @@ from sklearn.metrics import mean_squared_error
 
 from keras import backend as K
 from keras.models import Sequential, Model
-from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D, GlobalAveragePooling1D
+from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D, GlobalAveragePooling1D, GaussianDropout
 from keras.layers.core import Flatten, Dense, Dropout, Lambda
 from keras.optimizers import Adam
 from keras.preprocessing import text, sequence
@@ -115,7 +115,7 @@ if not load_text:
 #print(data['proc_description'].head())
 
 # %% Normalize data
-eps = .001
+eps = .00001
 data['price'] = np.log(data['price'] + eps); data['price'].fillna(-999, inplace=True)
 data['image_top_1'].fillna(-999, inplace=True)
 data['desc_len'] = np.log(data['desc_len'] + eps); data['desc_len'].fillna(-999, inplace=True)
@@ -123,12 +123,13 @@ data['desc_wc'] = np.log(data['desc_wc'] + eps); data['desc_wc'].fillna(-999, in
 data['title_len'] = np.log(data['title_len'] + eps); data['title_len'].fillna(-999, inplace=True)
 data['title_wc'] = np.log(data['title_wc'] + eps); data['title_wc'].fillna(-999, inplace=True)
 data['item_seq_number'] = np.log(data['item_seq_number'] + eps); data['item_seq_number'].fillna(-999, inplace=True)
+data['image'].loc[data.image.notnull()] = 1; data['image'].loc[data.image.isnull()] = 0
 
 # %% Encoding
 print('\nEncoding cat vars...')
 #cat_cols = ["user_id", "region", "city", "parent_category_name", "category_name", "item_seq_number", "user_type", "image_top_1"]
-cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "item_seq_number", "param_1", "param_2", "param_3"]
-data[cat_cols] = data[cat_cols].apply(LabelEncoder().fit_transform).astype(np.int32)
+cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "param_1", "param_2", "param_3"]
+data[cat_cols + ['item_seq_number']] = data[cat_cols + ['item_seq_number']].apply(LabelEncoder().fit_transform).astype(np.int32)
 
 # Assign max values for embedding
 max_region = data['region'].max() + 1
@@ -142,24 +143,33 @@ max_param_1 = data['param_1'].max() + 1
 max_param_2 = data['param_2'].max() + 1
 max_param_3 = data['param_3'].max() + 1
 
+features = ['category_name', 'city', 'desc_len', 'desc_wc', 'title_len', 'title_wc',
+            #'image',
+            'image_top_1', 'item_seq_number', 'param_1', 'param_2',
+            'param_3', 'parent_category_name', 'price', 'region','user_type', ]
+cont_cols = [col for col in features if col not in cat_cols]
+
+def emb_depth(max_size): return min(16, int(max_size**.33))
+
+cat_szs = {
+    "region": (max_region, emb_depth(max_region)),
+    "city": (max_city, emb_depth(max_city)),
+    "parent_category_name": (max_pcat, emb_depth(max_pcat)),
+    "category_name": (max_cat, emb_depth(max_cat)),
+    "user_type": (max_utype, emb_depth(max_utype)),
+    "image_top_1": (max_itop1, emb_depth(max_itop1)),
+    "param_1": (max_param_1, emb_depth(max_param_1)),
+    "param_2": (max_param_2, emb_depth(max_param_2)),
+    "param_3": (max_param_3, emb_depth(max_param_3)),
+    "image": (2, 2)
+}
+
+# %% Split datasets
 # %% Split datasets
 def getKerasData(dataset, desc=None, title=None):
     X = {
-        'region': np.array(dataset.region),
-        'city': np.array(dataset.city),
-        'pcat': np.array(dataset.parent_category_name),
-        'cat': np.array(dataset.category_name),
-        'seq': np.array(dataset.item_seq_number),
-        'utype': np.array(dataset.user_type),
-        'price': np.array(dataset.price),
-        'itop1': np.array(dataset.image_top_1),
-        'param_1': np.array(dataset.param_1),
-        'param_2': np.array(dataset.param_2),
-        'param_3': np.array(dataset.param_3),
-        'title_len': np.array(dataset.title_len),
-        'title_wc': np.array(dataset.title_wc),
-        'desc_len': np.array(dataset.desc_len),
-        'desc_wc': np.array(dataset.desc_wc),
+        'cat': np.array(dataset[cat_cols]),
+        'cont': np.array(dataset[cont_cols]),
         'desc': desc,
         'title': title,
     }; return X
@@ -176,10 +186,13 @@ if not load_text: # Splitting/loading text data
     title_tr = data_title[:train_len]
     del data_desc; del data_title; gc.collect()
 else:
+    print('Loading text...')
     desc_te =np.load(save_path + 'fasttext_desc_te.npy')
     title_te = np.load(save_path + 'fasttext_title_te.npy')
     desc_tr = np.load(save_path + 'fasttext_desc_tr.npy')
     title_tr = np.load(save_path + 'fasttext_title_tr.npy')
+    desc_embs = np.load(save_path + 'fasttext_desc_embs.npy')
+    title_embs = np.load(save_path + 'fasttext_title_embs.npy')
 
 if save_text: # Save text data
     np.save(save_path + 'fasttext_desc_tr', desc_tr)
@@ -196,85 +209,57 @@ def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pre
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred)) # OOF cost function
 
 def getModel(): # Model for making the NN
-    def emb_depth(max_size): return min(16, int(max_size**.33))
     cont_size = 16
 
-    in_region = Input(shape=[1], name='region')
-    emb_region = Embedding(max_region, emb_depth(max_region))(in_region)
-    in_city = Input(shape=[1], name='city')
-    emb_city = Embedding(max_city, emb_depth(max_city))(in_city)
-    in_pcat = Input(shape=[1], name='pcat')
-    emb_pcat = Embedding(max_pcat, emb_depth(max_pcat))(in_pcat)
-    in_cat = Input(shape=[1], name='cat')
-    emb_cat = Embedding(max_cat, emb_depth(max_cat))(in_cat)
-    in_utype = Input(shape=[1], name='utype')
-    emb_utype = Embedding(max_utype, emb_depth(max_utype))(in_utype)
-    in_itop1 = Input(shape=[1], name='itop1')
-    emb_itop1 = Embedding(max_itop1, emb_depth(max_itop1))(in_itop1)
+    cat_inp = Input(shape=(len(cat_cols),), name='cat')
+    cat_embs = []
+    for idx, col in enumerate(cat_cols):
+        x = Lambda(lambda x: x[:, idx, None])(cat_inp)
+        x = Embedding(cat_szs[col][0], cat_szs[col][1], input_length=1)(x)
+        cat_embs.append(x)
+    cat_embs = concatenate(cat_embs)
+    cat_embs = SpatialDropout1D(.4)(cat_embs)
+
+    cont_inp = Input(shape=(len(cont_cols),), name='cont')
+    cont_embs = []
+    for idx, col in enumerate(cont_cols):
+        x = Lambda(lambda x: x[:, idx, None])(cont_inp)
+        x = Dense(cont_size, activation='tanh')(x)
+        cont_embs.append(x)
+    cont_embs = concatenate(cont_embs)
+    cont_embs = Dropout(.4)(cat_embs)
 
     in_desc = Input(shape=(100,), name='desc')
     emb_desc = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc) )
     in_title = Input(shape=(30,), name='title')
     emb_title = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title) )
 
-    in_param_1 = Input(shape=[1], name='param_1')
-    emb_param_1 = Embedding(max_param_1, emb_depth(max_param_1))(in_param_1)
-    in_param_2 = Input(shape=[1], name='param_2')
-    emb_param_2 = Embedding(max_param_2, emb_depth(max_param_2))(in_param_2)
-    in_param_3 = Input(shape=[1], name='param_3')
-    emb_param_3 = Embedding(max_param_3, emb_depth(max_param_3))(in_param_3)
-
-    in_price = Input(shape=[1], name='price')
-    emb_price = Dense(cont_size, activation='tanh')(in_price)
-    in_title_len = Input(shape=[1], name='title_len')
-    emb_title_len = Dense(cont_size, activation='tanh')(in_title_len)
-    in_title_wc = Input(shape=[1], name='title_wc')
-    emb_title_wc = Dense(cont_size, activation='tanh')(in_title_wc)
-    in_desc_len = Input(shape=[1], name='desc_len')
-    emb_desc_len = Dense(cont_size, activation='tanh')(in_desc_len)
-    in_desc_wc = Input(shape=[1], name='desc_wc')
-    emb_desc_wc = Dense(cont_size, activation='tanh')(in_desc_wc)
-    in_seq = Input(shape=[1], name='seq')
-    emb_seq = Dense(cont_size, activation='tanh')(in_seq)
-
-    inps = [in_region, in_city, in_pcat, in_cat, in_utype, in_itop1, in_seq, in_param_1, in_param_2, in_param_3,
-            in_price, in_title_len, in_title_wc, in_desc_len, in_desc_wc,
-            in_desc, in_title
-            ]
-    cat_embs = concatenate([ (emb_region), (emb_city), (emb_pcat), (emb_cat), (emb_utype),
-                             (emb_itop1),  (emb_param_1), (emb_param_2), (emb_param_3)
-                            ])
-    cont_embs = concatenate([ (emb_price), (emb_title_len), (emb_title_wc), (emb_desc_len),
-                              (emb_desc_wc), (emb_seq)
-                             ])
-    #nums = [(in_price), (in_title_len), (in_title_wc), (in_desc_len), (in_desc_wc)]
-    cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
-    cont_dout = Dropout(.4)(cont_embs)
+    inps = [cat_inp, cont_inp, in_desc, in_title]
 
     descConv = GlobalAveragePooling1D()( Conv1D(100, kernel_size=7, strides=1, padding="same")(emb_desc) )
     titleConv = GlobalAveragePooling1D()( Conv1D(32, kernel_size=7, strides=1, padding="same")(emb_title) )
     convs = ( concatenate([ (descConv), (titleConv) ]) )
-
-    x = concatenate([(cat_dout), (cont_dout)])
-    # x = concatenate([(s_dout), (convs), *nums])
+    x = concatenate([cat_embs, cont_embs])
     x = Dropout(.4)(Dense(256, activation='relu')(x))
     #x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(64, activation='relu')(x))
+    x = Flatten()(x)
     x = concatenate([x, (convs)])
     #x = BatchNormalization()(x)
     out = Dense(1, activation='sigmoid')(x)
-
-
     model = Model(inputs=inps, outputs=out)
 
     from keras import backend as K
 
-    opt = Adam(lr=2e-3, decay=1e-6)
+    opt = Adam(lr=2e-3, )#decay=1e-6)
     model.compile(optimizer=opt, loss=root_mean_squared_error)
     return model
 
 # %% Train model
 print('\nTraining...')
+
+print(cat_cols)
+print(cont_cols)
 
 kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=218)
 models = []
@@ -289,10 +274,10 @@ for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round
     y_valid = train.iloc[valid_idx].deal_probability
     y_train = train.iloc[train_idx].deal_probability
     model = getModel()
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=4, verbose=1)
-    for layer in model.layers[:28]: # Freeze embedding layers
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
+    for layer in model.layers[:len(cat_cols)*2]: # Freeze cat embedding layers
         layer.trainable = False
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=6, verbose=1)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=7, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=bs)
     models.append(model)
 
