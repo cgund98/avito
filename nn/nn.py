@@ -21,9 +21,9 @@ os.environ['OMP_NUM_THREADS'] = '3'
 pd.options.mode.chained_assignment = None
 
 # %% Load data
-kaggle_path = '~/hdd/data/avito/'
+kaggle_path = '/home/callum/.kaggle/competitions/avito-demand-prediction/'
 output_file = 'submits/nn_avito.csv'
-embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
+embeddings_file = '/home/callum/.kaggle/competitions/avito-demand-prediction/cc.ru.300.vec'
 save_text = False
 load_text = True
 save_path = 'data/'
@@ -127,9 +127,8 @@ data['image'].loc[data.image.notnull()] = 1; data['image'].loc[data.image.isnull
 
 # %% Encoding
 print('\nEncoding cat vars...')
-#cat_cols = ["user_id", "region", "city", "parent_category_name", "category_name", "item_seq_number", "user_type", "image_top_1"]
-cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "param_1", "param_2", "param_3"]
-data[cat_cols + ['item_seq_number']] = data[cat_cols + ['item_seq_number']].apply(LabelEncoder().fit_transform).astype(np.int32)
+cat_cols_old = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "param_1", "param_2", "param_3", ]#"item_seq_number"]
+data[cat_cols_old] = data[cat_cols_old].apply(LabelEncoder().fit_transform).astype(np.int32)
 
 # Assign max values for embedding
 max_region = data['region'].max() + 1
@@ -165,7 +164,14 @@ cat_szs = {
 }
 
 # %% Split datasets
-# %% Split datasets
+# def getKerasData(dataset, desc=None, title=None):
+#     X = {
+#         'cat': np.array(dataset[cat_cols]),
+#         'cont': np.array(dataset[cont_cols]),
+#         'desc': desc,
+#         'title': title,
+#     }; return X
+
 def getKerasData(dataset, desc=None, title=None):
     X = {
         'cat': np.array(dataset[cat_cols]),
@@ -173,6 +179,9 @@ def getKerasData(dataset, desc=None, title=None):
         'desc': desc,
         'title': title,
     }; return X
+
+cat_cols = ['region', 'city', 'pcat', 'cat', 'utype', 'itop1', 'param_1', 'param_2', 'param_3']
+cont_cols = ['price', 'title_len', 'title_wc', 'desc_len', 'desc_wc', 'seq']
 
 test = data.iloc[train_len:].copy()
 train = data.iloc[:train_len].copy()
@@ -195,6 +204,7 @@ else:
     title_embs = np.load(save_path + 'fasttext_title_embs.npy')
 
 if save_text: # Save text data
+    print('Saving text...')
     np.save(save_path + 'fasttext_desc_tr', desc_tr)
     np.save(save_path + 'fasttext_title_tr', title_tr)
     np.save(save_path + 'fasttext_desc_te', desc_te)
@@ -205,8 +215,8 @@ if save_text: # Save text data
 # %% Create model
 print('Creating model...')
 
-def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true))) # Keras cost function
-def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred)) # OOF cost function
+def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true)))
+def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 
 def getModel(): # Model for making the NN
     cont_size = 16
@@ -234,12 +244,33 @@ def getModel(): # Model for making the NN
     in_title = Input(shape=(30,), name='title')
     emb_title = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[title_embs], trainable=False)(in_title) )
 
-    inps = [cat_inp, cont_inp, in_desc, in_title]
+    inps = [in_desc, in_title]
 
-    descConv = GlobalAveragePooling1D()( Conv1D(100, kernel_size=7, strides=1, padding="same")(emb_desc) )
+    cat_embs = []
+    for idx, col in enumerate(cat_cols):
+        #x = Lambda(lambda x: x[:, idx, None])(cat_inp)
+        inp = Input(shape=[1], name=col)
+        x = Embedding(cat_szs[col][0], cat_szs[col][1], input_length=1)(inp)
+        cat_embs.append((x))
+        inps.append(inp)
+    cat_embs = concatenate(cat_embs)
+
+    cont_embs = []
+    for idx, col in enumerate(cont_cols):
+        #x = Lambda(lambda x: x[:, idx, None])(cont_inp)
+        inp = Input(shape=[1], name=col)
+        x = Dense(cont_size, activation='tanh')(inp)
+        cont_embs.append((x))
+        inps.append(inp)
+    cont_embs = concatenate(cont_embs)
+    cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
+    cont_dout = Dropout(.4)(cont_embs)
+
+    descConv = GlobalAveragePooling1D()( Conv1D(64, kernel_size=7, strides=1, padding="same")(emb_desc) )
     titleConv = GlobalAveragePooling1D()( Conv1D(32, kernel_size=7, strides=1, padding="same")(emb_title) )
     convs = ( concatenate([ (descConv), (titleConv) ]) )
-    x = concatenate([cat_embs, cont_embs])
+
+    x = concatenate([(cat_dout), (cont_dout)])
     x = Dropout(.4)(Dense(256, activation='relu')(x))
     #x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(64, activation='relu')(x))
@@ -251,7 +282,7 @@ def getModel(): # Model for making the NN
 
     from keras import backend as K
 
-    opt = Adam(lr=2e-3, )#decay=1e-6)
+    opt = Adam(lr=2e-3,)
     model.compile(optimizer=opt, loss=root_mean_squared_error)
     return model
 
@@ -267,7 +298,7 @@ cv_tr = np.zeros((len(y_tr), 1))
 
 bs=4000
 
-for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
+for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols_old], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
     X_valid = getKerasData(train.iloc[valid_idx], desc_tr[valid_idx], title_tr[valid_idx])
     X_train = getKerasData(train.iloc[train_idx], desc_tr[train_idx], title_tr[train_idx])
