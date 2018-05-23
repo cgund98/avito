@@ -38,7 +38,7 @@ submit = pd.read_csv(kaggle_path + 'sample_submission.csv')
 train_len = len(train)
 data = pd.concat([train, test], axis=0)
 
-#Add aggregated features
+# Add aggregated features
 print('Adding aggregated features...')
 agg = pd.read_csv(kaggle_path + 'aggregated_features.csv')
 data = data.merge(agg, how='left', on=['user_id'])
@@ -137,6 +137,7 @@ features = [
     'region', 'city', 'parent_category_name', 'category_name', 'user_type', 'image_top_1', 'params', 'param_1',
     'price', 'title_len', 'title_wc', 'description_len', 'description_wc', 'item_seq_number',
     'description_num_unique_words', 'description_words_vs_unique', 'title_num_unique_words', 'title_words_vs_unique',
+    'avg_days_up_user', 'avg_times_up_user', 'n_user_items'
 ]
 cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "params", "param_1" ]
 cont_cols = [col for col in features if col not in cat_cols]
@@ -254,7 +255,6 @@ def getModel():
     #x = BatchNormalization()(x)
     out = Dense(1, activation='sigmoid')(x)
 
-
     model = Model(inputs=inps, outputs=out)
 
     from keras import backend as K
@@ -294,6 +294,7 @@ print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 #Fold RMSE: 0.2244001706665085 < Added another epoch
 #Fold RMSE: 0.2243065138497809 < Upped 1st Dense layer from 256 to 512
 #Fold RMSE: 0.22408247760573333 < fill cont. cols NA with mean
+#Fold RMSE: 0.22288079052919876 < Added aggregated features
 
 # %% Predict
 preds = np.zeros((len(test), 1))
@@ -303,5 +304,5 @@ for model in models:
 submit['deal_probability'] = preds / len(models)
 print(submit.head())
 
-submit.to_csv(output_file, index=False)
+submit.to_csv('nn/' + output_file, index=False)
 print('\nSaved: ' + output_file + '!')
