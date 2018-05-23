@@ -259,7 +259,12 @@ def getModel():
 
     from keras import backend as K
 
-    opt = Adam(lr=2e-3,)
+    exp_decay = lambda init, fin, steps: (init/fin)**(1/(steps-1)) - 1
+    steps = int(len(y_tr)/bs) * epochs
+    lr_init, lr_fin = 5e-3, 1e-3
+    lr_decay = exp_decay(lr_init, lr_fin, steps)
+
+    opt = Adam(lr=lr_init, decay=lr_decay)
     model.compile(optimizer=opt, loss=root_mean_squared_error)
     return model
 
@@ -295,6 +300,7 @@ print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
 #Fold RMSE: 0.2243065138497809 < Upped 1st Dense layer from 256 to 512
 #Fold RMSE: 0.22408247760573333 < fill cont. cols NA with mean
 #Fold RMSE: 0.22288079052919876 < Added aggregated features
+#Fold RMSE: 0.222707960 < Added exponential decay LR
 
 # %% Predict
 preds = np.zeros((len(test), 1))
