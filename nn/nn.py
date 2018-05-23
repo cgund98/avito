@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 # %% Imports
 import pandas as pd
 import numpy as np
@@ -7,7 +9,7 @@ from sklearn.metrics import mean_squared_error
 
 from keras import backend as K
 from keras.models import Sequential, Model
-from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D, GlobalAveragePooling1D, GaussianDropout
+from keras.layers import BatchNormalization, Input, Embedding, SpatialDropout1D, concatenate, Merge, Conv1D, GlobalAveragePooling1D, GlobalMaxPooling1D, GaussianDropout
 from keras.layers.core import Flatten, Dense, Dropout, Lambda
 from keras.optimizers import Adam
 from keras.preprocessing import text, sequence
@@ -16,30 +18,39 @@ punct = set(punctuation)
 import os
 import gc
 import re
-os.environ['OMP_NUM_THREADS'] = '3'
+os.environ['OMP_NUM_THREADS'] = '8'
 
 pd.options.mode.chained_assignment = None
 
 # %% Load data
-kaggle_path = '/home/callum/.kaggle/competitions/avito-demand-prediction/'
+kaggle_path = '~/hdd/data/avito/'
 output_file = 'submits/nn_avito.csv'
-embeddings_file = '/home/callum/.kaggle/competitions/avito-demand-prediction/cc.ru.300.vec'
+embeddings_file = '/home/callum/Coding/deeplearning/data/cc.ru.300.vec'
 save_text = False
 load_text = True
 save_path = 'data/'
 
 print('\nLoading data...\n')
 train = pd.read_csv(kaggle_path + 'train.csv', parse_dates=['activation_date'])
+y_tr = train.deal_probability.values
 test = pd.read_csv(kaggle_path + 'test.csv', parse_dates=['activation_date'])
 submit = pd.read_csv(kaggle_path + 'sample_submission.csv')
 train_len = len(train)
 data = pd.concat([train, test], axis=0)
 
-print('Train Length: {} \nTest Length: {} \n'.format(train_len, len(test)))
-# %% Info
-print('Columns:\n', data.columns.values)
+#Add aggregated features
+print('Adding aggregated features...')
+agg = pd.read_csv(kaggle_path + 'aggregated_features.csv')
+data = data.merge(agg, how='left', on=['user_id'])
+del agg; gc.collect()
 
-# %% Preprocess
+print('Train Length: {} \nTest Length: {} \n'.format(train_len, len(test)))
+
+# %% Columns
+#print('Columns:\n', data.columns.values)
+data.head()
+
+# %% Cleaning
 data[['param_1', 'param_2', 'param_3']].fillna('missing', inplace=True)
 data[['param_1', 'param_2', 'param_3']] = data[['param_1', 'param_2', 'param_3']].astype(str)
 
@@ -60,14 +71,22 @@ def clean_text(s):
     s = s.strip()
     return s
 
-#print('clean text')
+print('Cleaning text...')
 data['title'] = data.title.fillna('').astype(str).apply(clean_text)
 data['description'] = data.description.fillna('').astype(str).apply(clean_text)
 
-data['desc_len'] = data['description'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
-data['desc_wc'] = data['description'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
-data['title_len'] = data['title'].map(lambda x: len(str(x))).astype(np.float16) #Lenth
-data['title_wc'] = data['title'].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
+print('Creating more text features...')
+for col in ['description', 'title']:
+  data[col + '_len'] = data[col].map(lambda x: len(str(x))).astype(np.float16) #Lenth
+  data[col + '_wc'] = data[col].map(lambda x: len(str(x).split(' '))).astype(np.float16) #Word Count
+  data[col + '_num_unique_words'] = data[col].apply(lambda comment: len(set(w for w in comment.split())))
+  data[col + '_words_vs_unique'] = data[col + '_num_unique_words'] / data[col + '_wc'] * 100 # Count Unique Words
+
+print('Concatting params...')
+data['params'] = data.apply(lambda row: ' '.join([
+    str(row['param_1']),
+    str(row['param_2']),
+    str(row['param_3'])]),axis=1)
 
 # %% Process words
 word_vec_size = 300
@@ -80,8 +99,6 @@ def transformText(text_df, tokenizer, maxlen=100):
     embed_size = word_vec_size
     X_text = text_df.astype(str).fillna('NA')
     tokenizer.fit_on_texts(list(X_text))
-    #X_text = tokenizer.texts_to_sequences(X_text)
-    #X_text = sequence.pad_sequences(X_text, maxlen=maxlen)
     def get_coefs(word, *arr): return word, np.asarray(arr, dtype='float32')
     embeddings_index = dict(get_coefs(*o.rstrip().rsplit(' ')) for o in open(embeddings_file))
 
@@ -105,87 +122,60 @@ if not load_text:
     print('Encoding desc...')
     data_desc = desc_tokenizer.texts_to_sequences(data['description'])
     data_desc = sequence.pad_sequences(data_desc, maxlen=100)
-    #print(sequence.pad_sequences(data['description'], maxlen=max_word_len).shape)
     print('Encoding title...')
     data_title = title_tokenizer.texts_to_sequences(data['title'])
     data_title = sequence.pad_sequences(data_title, maxlen=30)
 
     print(data_title[1:3])
 
-#print(data['proc_description'].head())
-
 # %% Normalize data
 eps = .00001
-data['price'] = np.log(data['price'] + eps); data['price'].fillna(-999, inplace=True)
 data['image_top_1'].fillna(-999, inplace=True)
-data['desc_len'] = np.log(data['desc_len'] + eps); data['desc_len'].fillna(-999, inplace=True)
-data['desc_wc'] = np.log(data['desc_wc'] + eps); data['desc_wc'].fillna(-999, inplace=True)
-data['title_len'] = np.log(data['title_len'] + eps); data['title_len'].fillna(-999, inplace=True)
-data['title_wc'] = np.log(data['title_wc'] + eps); data['title_wc'].fillna(-999, inplace=True)
-data['item_seq_number'] = np.log(data['item_seq_number'] + eps); data['item_seq_number'].fillna(-999, inplace=True)
 data['image'].loc[data.image.notnull()] = 1; data['image'].loc[data.image.isnull()] = 0
+
+features = [
+    'region', 'city', 'parent_category_name', 'category_name', 'user_type', 'image_top_1', 'params', 'param_1',
+    'price', 'title_len', 'title_wc', 'description_len', 'description_wc', 'item_seq_number',
+    'description_num_unique_words', 'description_words_vs_unique', 'title_num_unique_words', 'title_words_vs_unique',
+]
+cat_cols = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "params", "param_1" ]
+cont_cols = [col for col in features if col not in cat_cols]
+
+for col in cont_cols:
+  data[col] = np.log(data[col] + eps); data[col].fillna(data[col].mean(), inplace=True)
 
 # %% Encoding
 print('\nEncoding cat vars...')
-cat_cols_old = ["region", "city", "parent_category_name", "category_name", "user_type", "image_top_1", "param_1", "param_2", "param_3", ]#"item_seq_number"]
-data[cat_cols_old] = data[cat_cols_old].apply(LabelEncoder().fit_transform).astype(np.int32)
+data[cat_cols] = data[cat_cols].apply(LabelEncoder().fit_transform).astype(np.int32)
+
+# Delete unused cols
+for col in [col for col in data.columns.values if col not in features]:
+    data.drop([col], inplace=True, axis=1)
 
 # Assign max values for embedding
-max_region = data['region'].max() + 1
-max_city = data['city'].max() + 1
-max_pcat = data['parent_category_name'].max() + 1
-max_cat = data['category_name'].max() + 1
-max_seq = data['item_seq_number'].max() + 1
-max_utype = data['user_type'].max() + 1
-max_itop1 = data['image_top_1'].max() + 1
-max_param_1 = data['param_1'].max() + 1
-max_param_2 = data['param_2'].max() + 1
-max_param_3 = data['param_3'].max() + 1
 
-features = ['category_name', 'city', 'desc_len', 'desc_wc', 'title_len', 'title_wc',
-            #'image',
-            'image_top_1', 'item_seq_number', 'param_1', 'param_2',
-            'param_3', 'parent_category_name', 'price', 'region','user_type', ]
-cont_cols = [col for col in features if col not in cat_cols]
+maxes = {}
+for col in cat_cols:
+    maxes[col] = data[col].max() + 1
 
 def emb_depth(max_size): return min(16, int(max_size**.33))
 
-cat_szs = {
-    "region": (max_region, emb_depth(max_region)),
-    "city": (max_city, emb_depth(max_city)),
-    "parent_category_name": (max_pcat, emb_depth(max_pcat)),
-    "category_name": (max_cat, emb_depth(max_cat)),
-    "user_type": (max_utype, emb_depth(max_utype)),
-    "image_top_1": (max_itop1, emb_depth(max_itop1)),
-    "param_1": (max_param_1, emb_depth(max_param_1)),
-    "param_2": (max_param_2, emb_depth(max_param_2)),
-    "param_3": (max_param_3, emb_depth(max_param_3)),
-    "image": (2, 2)
-}
+cat_szs = {}
+for col in cat_cols:
+    cat_szs[col] = ( maxes[col], emb_depth(maxes[col]) )
 
 # %% Split datasets
-# def getKerasData(dataset, desc=None, title=None):
-#     X = {
-#         'cat': np.array(dataset[cat_cols]),
-#         'cont': np.array(dataset[cont_cols]),
-#         'desc': desc,
-#         'title': title,
-#     }; return X
-
 def getKerasData(dataset, desc=None, title=None):
     X = {
-        'cat': np.array(dataset[cat_cols]),
-        'cont': np.array(dataset[cont_cols]),
         'desc': desc,
         'title': title,
-    }; return X
-
-cat_cols = ['region', 'city', 'pcat', 'cat', 'utype', 'itop1', 'param_1', 'param_2', 'param_3']
-cont_cols = ['price', 'title_len', 'title_wc', 'desc_len', 'desc_wc', 'seq']
+    }
+    for col in cat_cols + cont_cols:
+        X[col] = np.array(dataset[col])
+    return X
 
 test = data.iloc[train_len:].copy()
 train = data.iloc[:train_len].copy()
-y_tr = train.deal_probability.values
 del data; gc.collect()
 
 if not load_text: # Splitting/loading text data
@@ -212,32 +202,12 @@ if save_text: # Save text data
     np.save(save_path + 'fasttext_desc_embs', desc_embs)
     np.save(save_path + 'fasttext_title_embs', title_embs)
 
-# %% Create model
-print('Creating model...')
-
+# %% Define model
 def root_mean_squared_error(y_true, y_pred): return K.sqrt(K.mean(K.square(y_pred - y_true)))
 def rmse(y_true, y_pred): return np.sqrt(mean_squared_error(y_true, y_pred))
 
-def getModel(): # Model for making the NN
+def getModel():
     cont_size = 16
-
-    cat_inp = Input(shape=(len(cat_cols),), name='cat')
-    cat_embs = []
-    for idx, col in enumerate(cat_cols):
-        x = Lambda(lambda x: x[:, idx, None])(cat_inp)
-        x = Embedding(cat_szs[col][0], cat_szs[col][1], input_length=1)(x)
-        cat_embs.append(x)
-    cat_embs = concatenate(cat_embs)
-    cat_embs = SpatialDropout1D(.4)(cat_embs)
-
-    cont_inp = Input(shape=(len(cont_cols),), name='cont')
-    cont_embs = []
-    for idx, col in enumerate(cont_cols):
-        x = Lambda(lambda x: x[:, idx, None])(cont_inp)
-        x = Dense(cont_size, activation='tanh')(x)
-        cont_embs.append(x)
-    cont_embs = concatenate(cont_embs)
-    cont_embs = Dropout(.4)(cat_embs)
 
     in_desc = Input(shape=(100,), name='desc')
     emb_desc = SpatialDropout1D(.2)( Embedding(max_word_features+1, word_vec_size, weights=[desc_embs], trainable=False)(in_desc) )
@@ -263,21 +233,28 @@ def getModel(): # Model for making the NN
         cont_embs.append((x))
         inps.append(inp)
     cont_embs = concatenate(cont_embs)
-    cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
-    cont_dout = Dropout(.4)(cont_embs)
 
-    descConv = GlobalAveragePooling1D()( Conv1D(64, kernel_size=7, strides=1, padding="same")(emb_desc) )
-    titleConv = GlobalAveragePooling1D()( Conv1D(32, kernel_size=7, strides=1, padding="same")(emb_title) )
-    convs = ( concatenate([ (descConv), (titleConv) ]) )
+    cat_dout = Flatten()(SpatialDropout1D(.4)(cat_embs))
+    cont_dout = Dropout(.2)(cont_embs)
+
+    descConv = Conv1D(100, kernel_size=3, strides=1, padding="same")(emb_desc)
+    descGAP = GlobalAveragePooling1D()( descConv )
+    descGMP = GlobalMaxPooling1D()( descConv )
+
+    titleConv = Conv1D(32, kernel_size=3, strides=1, padding="same")(emb_title)
+    titleGAP = GlobalAveragePooling1D()( titleConv )
+    titleGMP = GlobalMaxPooling1D()( titleConv )
+    convs = ( concatenate([ (descGAP), (descGMP), (titleGAP), (titleGMP) ]) )
 
     x = concatenate([(cat_dout), (cont_dout)])
-    x = Dropout(.4)(Dense(256, activation='relu')(x))
+    x = Dropout(.4)(Dense(512, activation='relu')(x))
     #x = BatchNormalization()(x)
     x = Dropout(.4)(Dense(64, activation='relu')(x))
-    x = Flatten()(x)
     x = concatenate([x, (convs)])
     #x = BatchNormalization()(x)
     out = Dense(1, activation='sigmoid')(x)
+
+
     model = Model(inputs=inps, outputs=out)
 
     from keras import backend as K
@@ -289,38 +266,42 @@ def getModel(): # Model for making the NN
 # %% Train model
 print('\nTraining...')
 
-print(cat_cols)
-print(cont_cols)
-
 kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=218)
 models = []
 cv_tr = np.zeros((len(y_tr), 1))
 
-bs=4000
+bs=512*3
+epochs = 6
 
-for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols_old], np.round(y_tr))):
+for i, (train_idx, valid_idx) in enumerate(kfold.split(train[cat_cols], np.round(y_tr))):
     print('\nTraining model #{}'.format(i+1))
     X_valid = getKerasData(train.iloc[valid_idx], desc_tr[valid_idx], title_tr[valid_idx])
     X_train = getKerasData(train.iloc[train_idx], desc_tr[train_idx], title_tr[train_idx])
-    y_valid = train.iloc[valid_idx].deal_probability
-    y_train = train.iloc[train_idx].deal_probability
+    y_valid = y_tr[valid_idx]
+    y_train = y_tr[train_idx]
     model = getModel()
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=3, verbose=1)
-    for layer in model.layers[:len(cat_cols)*2]: # Freeze cat embedding layers
-        layer.trainable = False
-    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=7, verbose=1)
+    model.fit(X_train, y_train, batch_size=bs, validation_data=(X_valid, y_valid), epochs=epochs, verbose=1)
     cv_tr[valid_idx] = model.predict(X_valid, batch_size=bs)
     models.append(model)
 
 print('\nFold RMSE: {}'.format(rmse(y_tr, cv_tr)))
+#Fold RMSE: 0.22594231705501946 < With 3-wide conv
+#Fold RMSE: 0.226058889143819 < With 3-wide conv and all-1 params feature
+#Fold RMSE: 0.22571788218558694 < Added GMP
+#Fold RMSE: 0.22560138317572037 < desc conv up to 100 filters
+#Fold RMSE: 0.22466267000045032 < batch size to 512*3
+#Fold RMSE: 0.2245272222547689 < Added new text features and param_1
+#Fold RMSE: 0.2244001706665085 < Added another epoch
+#Fold RMSE: 0.2243065138497809 < Upped 1st Dense layer from 256 to 512
+#Fold RMSE: 0.22408247760573333 < fill cont. cols NA with mean
 
 # %% Predict
 preds = np.zeros((len(test), 1))
-for model in models: # Make predictions for each model
+for model in models:
     preds += model.predict(getKerasData(test, desc_te, title_te), batch_size=bs)
 
-submit['deal_probability'] = preds / len(models) # Average predictions of each model
+submit['deal_probability'] = preds / len(models)
 print(submit.head())
 
-submit.to_csv('nn/'+output_file, index=False)
+submit.to_csv(output_file, index=False)
 print('\nSaved: ' + output_file + '!')
